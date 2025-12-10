@@ -1,147 +1,123 @@
-// ▼▼ 設定項目 ▼▼
-const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
-const SHEET_NAME = 'Users';
-const CHANNEL_ACCESS_TOKEN = 'ここにさっきコピーした長いアクセストークンを貼る';
-const LIFF_URL = 'https://liff.line.me/あなたのLIFF_ID'; // 会員証ミニアプリのURL
-// ▲▲▲▲▲▲▲▲▲▲
-
-function doPost(e) {
-  const json = JSON.parse(e.postData.contents);
-
-  // 分岐：LINEプラットフォームからの通知（Webhook）か、ミニアプリからのAPI呼び出し名か？
-  if (json.events) {
-    // A. LINEからの通知（友だち追加など）の場合
-    return handleWebhook(json);
-  } else {
-    // B. ミニアプリからのAPI呼び出しの場合（前回の処理）
-    return handleApi(json);
-  }
-}
-
-// -------------------------------------------------------
-// A. Webhook処理（友だち追加時の処理）
-// -------------------------------------------------------
-function handleWebhook(json) {
-  const events = json.events;
-  
-  events.forEach(event => {
-    // 「友だち追加」または「ブロック解除」された時
-    if (event.type === 'follow') {
-      const userId = event.source.userId;
-      
-      // 1. プロフィール情報をLINEから取得
-      const profile = getUserProfile(userId);
-      const displayName = profile ? profile.displayName : 'Guest';
-
-      // 2. スプレッドシートに登録（既存ならスキップ）
-      getOrCreateUser(userId, displayName);
-
-      // 3. あいさつメッセージ（会員証のリンク）を送る
-      replyMessage(event.replyToken, displayName);
-    }
-  });
-
-  return ContentService.createTextOutput(JSON.stringify({status: 'ok'}));
-}
-
-// ユーザープロフィール取得（Messaging API）
-function getUserProfile(userId) {
-  const url = 'https://api.line.me/v2/bot/profile/' + userId;
-  const options = {
-    method: 'get',
-    headers: { 'Authorization': 'Bearer ' + CHANNEL_ACCESS_TOKEN }
-  };
-  try {
-    const res = UrlFetchApp.fetch(url, options);
-    return JSON.parse(res.getContentText());
-  } catch (e) {
-    return null;
-  }
-}
-
-// 返信メッセージ送信
-function replyMessage(replyToken, userName) {
-  const url = 'https://api.line.me/v2/bot/message/reply';
-  const payload = {
-    replyToken: replyToken,
-    messages: [
-      {
-        type: 'text',
-        text: `${userName}様、友だち登録ありがとうございます！\n\nPCホスピタル会員証が発行されました。\n以下のボタンからご確認ください。`
-      },
-      {
-        type: 'template',
-        altText: '会員証を開く',
-        template: {
-          type: 'buttons',
-          text: '会員証はこちら',
-          actions: [
-            {
-              type: 'uri',
-              label: '会員証を表示',
-              uri: LIFF_URL
-            }
-          ]
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>会員証</title>
+    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <style>
+        body { font-family: sans-serif; background-color: #f0f0f0; display: flex; justify-content: center; padding: 20px; }
+        
+        /* 会員証カードのデザイン */
+        .card {
+            width: 100%; max-width: 350px; height: 200px;
+            border-radius: 15px; padding: 20px; color: white;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            position: relative; overflow: hidden;
+            display: none; /* 最初は隠しておく */
         }
-      }
-    ]
-  };
 
-  const options = {
-    method: 'post',
-    headers: {
-      'Authorization': 'Bearer ' + CHANNEL_ACCESS_TOKEN,
-      'Content-Type': 'application/json'
-    },
-    payload: JSON.stringify(payload)
-  };
-  
-  UrlFetchApp.fetch(url, options);
-}
+        /* 無料会員のデザイン */
+        .card.free {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        /* 有料会員のデザイン */
+        .card.premium {
+            background: linear-gradient(135deg, #f6d365 0%, #fda085 100%);
+            border: 2px solid #fff;
+        }
 
-// -------------------------------------------------------
-// B. API処理（ミニアプリからの呼び出し）※前回と同じロジック
-// -------------------------------------------------------
-function handleApi(data) {
-  try {
-    const userId = data.userId;
-    const displayName = data.displayName || 'No Name';
-    
-    // 登録 or 取得
-    const user = getOrCreateUser(userId, displayName);
+        .member-rank { font-size: 1.5em; font-weight: bold; }
+        .member-name { margin-top: 10px; font-size: 1.2em; }
+        .member-id { position: absolute; bottom: 20px; right: 20px; font-family: monospace; opacity: 0.8; }
+        
+        #loading { margin-top: 50px; font-weight: bold; color: #555; }
+    </style>
+</head>
+<body>
 
-    const response = { status: 'success', data: user };
-    return ContentService.createTextOutput(JSON.stringify(response))
-      .setMimeType(ContentService.MimeType.JSON);
+    <div id="loading">会員情報を読み込み中...</div>
 
-  } catch (error) {
-    const errorResponse = { status: 'error', message: error.toString() };
-    return ContentService.createTextOutput(JSON.stringify(errorResponse))
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-}
+    <div id="memberCard" class="card">
+        <div class="member-rank" id="rankText">MEMBER</div>
+        <div class="member-name" id="nameText">ゲスト様</div>
+        <div class="member-id" id="idText">ID: -</div>
+    </div>
 
-// -------------------------------------------------------
-// 共通：ユーザーDB操作
-// -------------------------------------------------------
-function getOrCreateUser(userId, displayName) {
-  const sheet = SpreadsheetApp.openById(SPREADSHEET_ID).getSheetByName(SHEET_NAME);
-  const lastRow = sheet.getLastRow();
-  
-  // 既存チェック
-  if (lastRow > 1) {
-    const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
-    for (let i = 0; i < data.length; i++) {
-      if (data[i][0] === userId) {
-        return { userId: data[i][0], name: data[i][1], memberType: data[i][2] };
-      }
-    }
-  }
+    <script>
+        // ▼▼ 設定項目 ▼▼
+        const LIFF_ID = 'YOUR_LIFF_ID'; // LINE Developersで取得したLIFF ID
+        const GAS_API_URL = 'YOUR_GAS_WEB_APP_URL'; // さっきコピーしたGASのURL
+        // ▲▲▲▲▲▲▲▲▲▲
 
-  // 新規登録
-  const newMemberType = 'free';
-  const now = new Date();
-  sheet.appendRow([userId, displayName, newMemberType, now]);
-  
-  return { userId: userId, name: displayName, memberType: newMemberType };
-}
+        async function main() {
+            try {
+                // 1. LIFF初期化
+                await liff.init({ liffId: LIFF_ID });
+                
+                if (!liff.isLoggedIn()) {
+                    liff.login();
+                    return;
+                }
+
+                // 2. ユーザー情報の取得
+                const profile = await liff.getProfile();
+                const userId = profile.userId;
+                const displayName = profile.displayName;
+
+                // 3. GASへ問い合わせ（POST送信）
+                // GASの仕様上、CORSエラーが出ても実際には成功している場合があるが、
+                // fetchのmode: 'no-cors' ではなく、標準的なPOSTを行いテキストで受け取る構成にする。
+                // ※GitHub PagesとGAS間では redirect: 'follow' が重要です。
+                
+                const response = await fetch(GAS_API_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({ userId: userId, displayName: displayName })
+                });
+                
+                const json = await response.json();
+                
+                if (json.status === 'success') {
+                    renderCard(json.data);
+                } else {
+                    alert('データ取得エラー: ' + json.message);
+                }
+
+            } catch (err) {
+                console.error(err);
+                document.getElementById('loading').textContent = 'エラーが発生しました。';
+                // PCなどで直接開いた場合のテスト用アラート
+                // alert('Error: ' + err); 
+            }
+        }
+
+        function renderCard(userData) {
+            const card = document.getElementById('memberCard');
+            const rankText = document.getElementById('rankText');
+            const nameText = document.getElementById('nameText');
+            const idText = document.getElementById('idText');
+
+            // 画面反映
+            nameText.textContent = userData.name + ' 様';
+            idText.textContent = 'ID: ' + userData.userId.substring(0, 8) + '...';
+
+            // デザインの出し分け
+            card.classList.remove('free', 'premium'); // 一旦リセット
+            if (userData.memberType === 'premium') {
+                card.classList.add('premium');
+                rankText.textContent = '✨ PREMIUM MEMBER';
+            } else {
+                card.classList.add('free');
+                rankText.textContent = 'REGULAR MEMBER';
+            }
+
+            // 表示切り替え
+            document.getElementById('loading').style.display = 'none';
+            card.style.display = 'block';
+        }
+
+        main();
+    </script>
+</body>
+</html>
