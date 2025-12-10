@@ -86,7 +86,7 @@
 
             } catch (err) {
                 console.error(err);
-                document.getElementById('loading').textContent = 'エラーが発生しました。';
+                document.getElementById('loading').textContent = 'エラー詳細: ' + err;
                 // PCなどで直接開いた場合のテスト用アラート
                 // alert('Error: ' + err); 
             }
