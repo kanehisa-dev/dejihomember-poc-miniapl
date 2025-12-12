@@ -100,7 +100,11 @@
 
             // 画面反映
             nameText.textContent = userData.name + ' 様';
-            idText.textContent = 'ID: ' + userData.userId.substring(0, 8) + '...';
+            
+            // 【変更点】GASから返ってきた memberId をそのまま表示
+            // userData.memberId が存在しない場合のフォールバックも念のため記述
+            const displayId = userData.memberId || '発行中...';
+            idText.textContent = 'ID: ' + displayId;
 
             // デザインの出し分け
             card.classList.remove('free', 'premium'); // 一旦リセット
